@@ -40,12 +40,15 @@ class DataHandler:
         
         self.index_data = None
         self.constituents_data = None
+        self.constituents_data_full = None  # Full universe (all 500 stocks) for benchmark
         self.constituents_list = None
         self.correlation_matrix = None
         self.returns = None
+        self.returns_full = None  # Returns for full universe
         self.index_returns = None
         self.sector_data = None
         self.market_caps = None
+        self.market_caps_full = None  # Market caps for full universe
 
     def fetch_index_data(self) -> pd.DataFrame:
         """
@@ -165,11 +168,17 @@ class DataHandler:
                 print(f"Error downloading batch: {e}")
 
         if all_data:
-            self.constituents_data = pd.concat(all_data, axis=1)
+            # First, save the FULL universe data (all 500 stocks)
+            self.constituents_data_full = pd.concat(all_data, axis=1)
+            print(f"✓ Full universe: {len(self.constituents_data_full.columns)} assets (including incomplete data)")
+            
+            # Then create filtered version for strategy selection (complete data only)
+            self.constituents_data = self.constituents_data_full.copy()
             # Drop columns with too many NaN values
             self.constituents_data = self.constituents_data.dropna(axis=1, thresh=len(self.constituents_data) * 0.8)
             self.constituents_data = self.constituents_data.dropna()
-            print(f"Successfully fetched data for {len(self.constituents_data.columns)} assets")
+            print(f"✓ Filtered universe: {len(self.constituents_data.columns)} assets (complete data for strategies)")
+            print(f"✓ Filtered out: {len(self.constituents_data_full.columns) - len(self.constituents_data.columns)} assets")
         
         return self.constituents_data
 
@@ -227,30 +236,72 @@ class DataHandler:
         if self.index_data is None:
             raise ValueError("Index data not loaded. Call fetch_index_data first.")
 
-        # Compute constituent returns
+        # Compute constituent returns for filtered universe (strategy selection)
         self.returns = np.log(self.constituents_data / self.constituents_data.shift(1)).dropna()
         
+        # Compute returns for FULL universe (benchmark calculation)
+        if self.constituents_data_full is not None:
+            self.returns_full = np.log(self.constituents_data_full / self.constituents_data_full.shift(1))
+        
         if use_market_cap_weights:
-            print("\nComputing market-cap weighted index returns...")
-            # Fetch market caps if not already available
-            if self.market_caps is None:
-                self.fetch_market_caps(self.constituents_data.columns.tolist())
+            print("\nComputing market-cap weighted index returns from FULL universe (500 stocks)...")
             
-            # Filter to tickers we have both prices and market caps for
-            common_tickers = self.returns.columns.intersection(self.market_caps.index)
-            
-            if len(common_tickers) > 0:
-                # Normalize market caps to weights
-                weights = self.market_caps[common_tickers] / self.market_caps[common_tickers].sum()
+            # Use FULL universe for benchmark calculation
+            if self.constituents_data_full is not None:
+                # Fetch market caps for FULL universe
+                full_tickers = self.constituents_data_full.columns.tolist()
+                if self.market_caps_full is None:
+                    print(f"Fetching market caps for full universe ({len(full_tickers)} stocks)...")
+                    self.market_caps_full = self.fetch_market_caps(full_tickers)
                 
-                # Compute weighted returns
-                weighted_returns = self.returns[common_tickers].multiply(weights, axis=1).sum(axis=1)
-                self.index_returns = weighted_returns
-                print(f"✓ Computed market-cap weighted returns using {len(common_tickers)} assets")
-                print(f"   Largest weights: {weights.nlargest(5).to_dict()}")
+                # For each date, use available data (handle NaNs dynamically)
+                print("Computing time-varying market-cap weighted returns...")
+                weighted_returns_list = []
+                
+                for date in self.returns_full.index:
+                    # Get returns for this date
+                    date_returns = self.returns_full.loc[date]
+                    
+                    # Filter to tickers with valid returns and market caps
+                    valid_mask = ~date_returns.isna()
+                    valid_tickers = date_returns[valid_mask].index.intersection(self.market_caps_full.index)
+                    
+                    if len(valid_tickers) > 0:
+                        # Normalize market caps to weights for available tickers
+                        weights = self.market_caps_full[valid_tickers] / self.market_caps_full[valid_tickers].sum()
+                        # Compute weighted return
+                        weighted_return = (date_returns[valid_tickers] * weights).sum()
+                        weighted_returns_list.append(weighted_return)
+                    else:
+                        weighted_returns_list.append(np.nan)
+                
+                self.index_returns = pd.Series(weighted_returns_list, index=self.returns_full.index)
+                self.index_returns = self.index_returns.dropna()
+                
+                # Report statistics
+                avg_stocks = (~self.returns_full.isna()).sum(axis=1).mean()
+                print(f"✓ Computed market-cap weighted returns from full universe")
+                print(f"   Average stocks per day: {avg_stocks:.0f}/{len(full_tickers)}")
+                
+                # Show top weights
+                if len(self.market_caps_full) > 0:
+                    top_weights = self.market_caps_full.nlargest(5) / self.market_caps_full.sum()
+                    print(f"   Largest weights: {top_weights.to_dict()}")
             else:
-                print("⚠️  No common tickers with market caps, falling back to ^GSPC index")
-                self.index_returns = np.log(self.index_data / self.index_data.shift(1)).dropna()
+                # Fallback: use filtered universe
+                print("⚠️  Full universe not available, using filtered universe for benchmark")
+                if self.market_caps is None:
+                    self.fetch_market_caps(self.constituents_data.columns.tolist())
+                
+                common_tickers = self.returns.columns.intersection(self.market_caps.index)
+                if len(common_tickers) > 0:
+                    weights = self.market_caps[common_tickers] / self.market_caps[common_tickers].sum()
+                    weighted_returns = self.returns[common_tickers].multiply(weights, axis=1).sum(axis=1)
+                    self.index_returns = weighted_returns
+                    print(f"✓ Computed market-cap weighted returns using {len(common_tickers)} filtered assets")
+                else:
+                    print("⚠️  No common tickers with market caps, falling back to ^GSPC index")
+                    self.index_returns = np.log(self.index_data / self.index_data.shift(1)).dropna()
         else:
             # Use ^GSPC index returns
             self.index_returns = np.log(self.index_data / self.index_data.shift(1)).dropna()
@@ -342,9 +393,15 @@ class DataHandler:
         Args:
             prefix: Prefix for saved files
         """
+        # Save full universe data (for benchmark)
+        if self.constituents_data_full is not None:
+            self.constituents_data_full.to_csv(self.data_dir / f"{prefix}_prices_full.csv")
+            print(f"✓ Saved full universe prices to {self.data_dir / f'{prefix}_prices_full.csv'}")
+        
+        # Save filtered data (for strategies)
         if self.constituents_data is not None:
             self.constituents_data.to_csv(self.data_dir / f"{prefix}_prices.csv")
-            print(f"✓ Saved constituent prices to {self.data_dir / f'{prefix}_prices.csv'}")
+            print(f"✓ Saved filtered constituent prices to {self.data_dir / f'{prefix}_prices.csv'}")
         
         if self.index_data is not None:
             self.index_data.to_csv(self.data_dir / f"{prefix}_index.csv")
@@ -352,11 +409,11 @@ class DataHandler:
         
         if self.returns is not None:
             self.returns.to_csv(self.data_dir / f"{prefix}_returns.csv")
-            print(f"✓ Saved constituent returns to {self.data_dir / f'{prefix}_returns.csv'}")
+            print(f"✓ Saved filtered constituent returns to {self.data_dir / f'{prefix}_returns.csv'}")
         
         if self.index_returns is not None:
             self.index_returns.to_csv(self.data_dir / f"{prefix}_index_returns.csv")
-            print(f"✓ Saved index returns to {self.data_dir / f'{prefix}_index_returns.csv'}")
+            print(f"✓ Saved market-cap weighted index returns to {self.data_dir / f'{prefix}_index_returns.csv'}")
         
         if self.correlation_matrix is not None:
             self.correlation_matrix.to_csv(self.data_dir / f"{prefix}_correlations.csv")
@@ -379,6 +436,7 @@ class DataHandler:
         """
         try:
             prices_file = self.data_dir / f"{prefix}_prices.csv"
+            prices_full_file = self.data_dir / f"{prefix}_prices_full.csv"  # Full universe
             index_file = self.data_dir / f"{prefix}_index.csv"
             returns_file = self.data_dir / f"{prefix}_returns.csv"
             index_returns_file = self.data_dir / f"{prefix}_index_returns.csv"
@@ -389,10 +447,19 @@ class DataHandler:
                        index_returns_file.exists(), corr_file.exists(), constituents_file.exists()]):
                 return False
 
+            # Load filtered data (for strategies)
             self.constituents_data = pd.read_csv(prices_file, index_col=0, parse_dates=True)
             self.index_data = pd.read_csv(index_file, index_col=0, parse_dates=True).squeeze()
             self.returns = pd.read_csv(returns_file, index_col=0, parse_dates=True)
             self.index_returns = pd.read_csv(index_returns_file, index_col=0, parse_dates=True, squeeze=True)
+            
+            # Try to load full universe data (optional, for backward compatibility)
+            if prices_full_file.exists():
+                self.constituents_data_full = pd.read_csv(prices_full_file, index_col=0, parse_dates=True)
+                self.constituents_data_full = self.constituents_data_full.apply(pd.to_numeric, errors='coerce')
+                print(f"✓ Loaded full universe: {len(self.constituents_data_full.columns)} stocks")
+            else:
+                print("⚠️  Full universe data not found (old cache format). Benchmark uses filtered universe.")
             
             # Ensure numeric types
             self.constituents_data = self.constituents_data.apply(pd.to_numeric, errors='coerce')
@@ -406,7 +473,8 @@ class DataHandler:
             with open(constituents_file, "r") as f:
                 self.constituents_list = f.read().strip().split('\n')
 
-            print(f"✓ All data loaded successfully from {self.data_dir}")
+            print(f"✓ Filtered data loaded: {len(self.constituents_data.columns)} stocks with complete data")
+            print(f"✓ Benchmark returns: Market-cap weighted from {'full universe' if self.constituents_data_full is not None else 'filtered universe'}")
             return True
         except Exception as e:
             print(f"✗ Error loading data: {e}")

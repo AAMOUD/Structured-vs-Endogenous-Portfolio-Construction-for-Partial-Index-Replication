@@ -3,8 +3,8 @@
 # Data parameters
 DATA_PARAMS = {
     "index": "^GSPC",  # S&P 500
-    "start_date": "2020-01-01",
-    "end_date": "2023-12-31",
+    "start_date": "2024-01-01",
+    "end_date": "2026-01-01",
     "data_source": "yfinance",  # Using yfinance for fetching data
 }
 

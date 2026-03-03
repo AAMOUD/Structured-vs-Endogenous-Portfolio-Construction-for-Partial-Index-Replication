@@ -1,41 +1,54 @@
-# S&P 500 Index Replication: Paradigm 1 Analysis
+# S&P 500 Index Replication: Paradigm 1 vs Paradigm 2 Analysis
 
 Implementation of Wang et al. (2018) methodology for comparing portfolio construction paradigms.
 
 ## 📁 Project Structure
 
 ```
-├── main.ipynb                  # Main analysis notebook
+├── README.md                   # Project documentation
 ├── requirements.txt            # Python dependencies
 │
-├── Core Modules/
+├── Shared Modules/
 │   ├── data.py                 # Data fetching and preprocessing
-│   ├── models.py               # Three selection models (S-Strategy, Clustering, Correlation Ranking)
+│   └── config.py               # Configuration parameters
+│
+├── paradigm1/                  # Paradigm 1: Selection + Optimization
+│   ├── main.ipynb              # Full analysis notebook
+│   ├── models.py               # Three selection models (S-Strategy, Clustering, CorrelationRanking)
 │   ├── optimization.py         # Quadratic programming optimizer
 │   ├── backtest.py             # Simple backtest engine
-│   └── backtest_wang.py        # Wang et al. compliant evaluation framework
+│   ├── backtest_wang.py        # Wang et al. compliant evaluation framework
+│   └── results/                # Paradigm 1 results directory
+│       ├── wang_evaluation_results.csv      # Wang evaluation (K=50)
+│       └── multi_k_wang_evaluation.csv      # Multi-K analysis (K=50-200)
 │
-├── config.py                   # Configuration parameters
+├── paradigm2/                  # Paradigm 2: O Strategy (Endogenous)
+│   ├── main.ipynb              # O Strategy analysis
+│   ├── models.py               # 4 O Strategy models (MIQP, LASSO, ElasticNet, ReweightedL1)
+│   ├── optimization.py         # (unused - optimization in models.py)
+│   ├── backtest.py             # Wang backtesting for O Strategy
+│   └── results/                # Paradigm 2 results directory
+│       └── paradigm2_wang_evaluation.csv    # O Strategy evaluation
 │
 └── data/
     ├── sp500_tickers.csv       # Full S&P 500 constituent list with sectors
     ├── sp500_*.csv             # Cached price/return data (7 files)
     │
-    └── exports/
-        ├── wang_evaluation_results.csv           # Wang evaluation (K=50)
-        ├── multi_k_wang_evaluation.csv          # Multi-K analysis (K=50-200)
-        ├── sp500_constituents_info.csv          # Constituent metadata
-        ├── sp500_correlations_with_sectors.csv  # Correlation analysis
-        └── sp500_sector_statistics.csv          # Sector composition
+    └── exports/                # Reference data exports
+        ├── sp500_constituents_info.csv
+        ├── sp500_correlations_with_sectors.csv
+        └── sp500_sector_statistics.csv
 ```
 
-## 🎯 Paradigm 1: Selection + Optimization
+## 🎯 Two Paradigms for Index Replication
+
+### Paradigm 1: Selection + Optimization (Structured - COMPLETED ✅)
 
 Two-stage approach:
 1. **Selection**: Choose K assets using one of three methods
 2. **Optimization**: Minimize tracking error via quadratic programming
 
-### Three Models Implemented:
+**Three Models Implemented:**
 
 1. **S-Strategy (Stratified Sampling)**
    - Structured approach with proportional sector allocation
@@ -52,7 +65,83 @@ Two-stage approach:
    - Naive baseline
    - Expected: Lowest TE_in, risk of overfitting
 
-## 📊 Evaluation Framework (Wang et al. 2018)
+### Paradigm 2: O Strategy (Endogenous - IMPLEMENTED ✅)
+
+One-stage approach:
+- **Simultaneous** asset selection and weight optimization
+- Endogenous portfolio construction
+- Expected: Better optimization but higher complexity
+
+**Four Models Implemented:**
+
+1. **MIQP Cardinality**
+   - Mixed-Integer Quadratic Programming
+   - Exact solution with binary variables: x_i ∈ {0,1}
+   - Requires: SCIP (free) or CPLEX (academic license)
+   - Expected: Best TE but slowest
+
+2. **LASSO**
+   - L1 regularization: min ||R*w - I||² + λ||w||₁
+   - Fully convex, no integer variables
+   - Fast and stable
+   - Expected: Good sparsity, fast execution
+
+3. **Elastic Net**
+   - L1 + L2 regularization: λ₁||w||₁ + λ₂||w||²₂
+   - More stable than pure LASSO
+   - Expected: Better robustness than LASSO
+
+4. **Reweighted L1**
+   - Iterative reweighting: Σ |w_i| / (|w_i^prev| + ε)
+   - Approximates L0 norm (cardinality)
+   - Fully convex at each iteration
+   - Expected: Best sparsity among convex methods
+
+## � Mathematical Formulations
+
+### Paradigm 1: Two-Stage Approach
+```
+Stage 1 (Selection): Choose K assets using S-Strategy / Clustering / Correlation
+Stage 2 (Optimization): 
+    min ||R_S * w - I||²
+    s.t. sum(w) = 1
+         0 ≤ w_i ≤ 1
+```
+
+### Paradigm 2: One-Stage Approach
+
+**MIQP Cardinality:**
+```
+min (1/T) * ||R * w - I||²
+s.t. sum(w) = 1
+     sum(x) = K
+     l*x_i ≤ w_i ≤ u*x_i
+     x_i ∈ {0,1}
+```
+
+**LASSO:**
+```
+min (1/T) * ||R * w - I||² + λ * ||w||₁
+s.t. sum(w) = 1
+     w ≥ 0
+```
+
+**Elastic Net:**
+```
+min (1/T) * ||R * w - I||² + λ₁*||w||₁ + λ₂*||w||²₂
+s.t. sum(w) = 1
+     w ≥ 0
+```
+
+**Reweighted L1 (Iterative):**
+```
+For t = 1 to max_iter:
+    min (1/T) * ||R * w - I||² + λ * Σ |w_i| / (|w_i^(t-1)| + ε)
+    s.t. sum(w) = 1
+         w ≥ 0
+```
+
+## �📊 Evaluation Framework (Wang et al. 2018)
 
 ### Proper Train/Test Methodology:
 - **70% in-sample** (training): Asset selection and weight optimization
@@ -73,16 +162,31 @@ Two-stage approach:
 pip install -r requirements.txt
 ```
 
-### 2. Run Analysis
-Open `main.ipynb` and run cells in order:
+### 2. Run Paradigm 1 Analysis
+Open `paradigm1/main.ipynb` and run cells in order:
 - **Section 1**: Data loading (uses cached data)
 - **Section 4.5**: Wang evaluation (K=50)
 - **Section 4.6**: Multi-K analysis (K=50-200)
 
-### 3. Results
-Results automatically saved to `./data/exports/`:
-- `wang_evaluation_results.csv`: Single-K evaluation
-- `multi_k_wang_evaluation.csv`: Multi-K evaluation
+### 3. Run Paradigm 2 Analysis
+Open `paradigm2/main.ipynb` and run cells in order:
+- **Section 1**: Setup and imports
+- **Section 2**: Initialize O Strategy models
+- **Section 3**: Compute correlations
+- **Section 4**: Wang evaluation
+- **Section 5**: Run comparison
+- **Section 6**: Save results
+- **Section 7**: Compare with Paradigm 1
+- **Section 8**: Visualization
+
+### 4. Results
+Results automatically saved:
+- `./paradigm1/results/wang_evaluation_results.csv` (Paradigm 1, K=50)
+- `./paradigm1/results/multi_k_wang_evaluation.csv` (Paradigm 1, K=50-200)
+- `./paradigm2/results/paradigm2_wang_evaluation.csv` (Paradigm 2)
+
+Reference data saved to:
+- `./data/exports/` (constituent info, correlations, sector stats)
 
 ## 📈 Expected Results
 
@@ -105,9 +209,10 @@ Results automatically saved to `./data/exports/`:
 - ✅ Correct TE formula from Wang et al.
 
 ### Files to Use for Thesis:
-- ✅ `wang_evaluation_results.csv` (with Mean_Corr fix)
-- ✅ `multi_k_wang_evaluation.csv` (if generated)
-- ❌ DO NOT use old `multi_k_backtest_results.csv` (deleted - invalid methodology)
+- ✅ `paradigm1/results/wang_evaluation_results.csv` (with Mean_Corr fix)
+- ✅ `paradigm1/results/multi_k_wang_evaluation.csv` (Multi-K analysis)
+- ✅ `paradigm2/results/paradigm2_wang_evaluation.csv` (O Strategy results)
+- 📊 `data/exports/` (reference data only)
 
 ## 📚 References
 
@@ -132,14 +237,31 @@ Wang, M., Xu H., Dai, Z., & Zaho, X. (2018). Structured vs Endogenous Portfolio 
 
 ## 📝 Status
 
+### Paradigm 1 (Completed ✅):
 - ✅ Core implementation complete
 - ✅ Wang et al. evaluation framework implemented
 - ✅ Mean_Corr bug fixed (now computed per period)
 - ✅ Multi-K analysis implemented
-- ✅ Project cleaned up
+- ✅ Project structure reorganized
 - ✅ Ready for thesis results
+
+### Paradigm 2 (Completed ✅):
+- ✅ MIQP Cardinality model implemented
+- ✅ LASSO model implemented
+- ✅ Elastic Net model implemented
+- ✅ Reweighted L1 model implemented
+- ✅ Wang backtesting framework implemented
+- ✅ Paradigm comparison framework implemented
+- ✅ Ready for thesis comparison
+
+### Next Steps:
+1. Install cvxpy: `pip install cvxpy`
+2. (Optional) Install SCIP for MIQP: `pip install pyscipopt`
+3. Run paradigm2/main.ipynb to get O Strategy results
+4. Compare Paradigm 1 vs Paradigm 2 using Section 7 outputs
 
 ---
 
 **Last Updated**: February 27, 2026  
-**Status**: Production-ready for thesis
+**Paradigm 1 Status**: Production-ready for thesis  
+**Paradigm 2 Status**: Implementation complete, ready for evaluation

@@ -1,5 +1,9 @@
 """Portfolio selection models for index replication."""
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Tuple
