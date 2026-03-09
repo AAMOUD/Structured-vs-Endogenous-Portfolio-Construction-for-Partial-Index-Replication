@@ -14,7 +14,6 @@ class BacktestEngine:
         self.market_caps = market_caps
 
         os.makedirs("results/portfolios", exist_ok=True)
-        os.makedirs("results/metrics", exist_ok=True)
         os.makedirs("results/summaries", exist_ok=True)
 
     def tracking_error(self, portfolio, benchmark):
@@ -90,120 +89,96 @@ class BacktestEngine:
         weights = caps / total
         return weights.values
 
-    def run(self, models, K_list, train=500, test=21):
+    def run(self, models, K_list):
 
-        summary_results = []
+        horizons = {
+            "1y":   252,
+            "5y":   252 * 5,
+            "10y":  252 * 10,
+            "full": len(self.returns)
+        }
 
-        T = len(self.returns)
+        results = []
 
-        model_metrics_map = {model_name: [] for model_name in models}
-        previous_weights_map = {(model_name, K): None for model_name in models for K in K_list}
-        previous_assets_map = {(model_name, K): None for model_name in models for K in K_list}
+        for horizon_name, horizon_length in horizons.items():
 
-        for start in range(0, T - train - test, test):
+            print(f"\n=== Horizon: {horizon_name} ({horizon_length} days) ===")
 
-            train_slice = slice(start, start + train)
-            test_slice = slice(start + train, start + train + test)
-
-            R_train_full = self.returns.iloc[train_slice]
-            R_test_full = self.returns.iloc[test_slice]
-
-            I_train = self.index_returns.iloc[train_slice]
-            I_test = self.index_returns.iloc[test_slice]
-
-            R_train = R_train_full.dropna(axis=1)
-            R_test = R_test_full[R_train.columns]
+            R_train = self.returns.iloc[-horizon_length:].dropna(axis=1)
+            I_train = self.index_returns.iloc[-horizon_length:]
 
             for K in K_list:
 
                 if len(R_train.columns) < K:
+                    print(f"  Skipping K={K}: only {len(R_train.columns)} assets available")
                     continue
 
                 for model_name, model_class in models.items():
 
+                    print(f"  [{horizon_name}] K={K:3d}  {model_name}...", end=" ", flush=True)
+
                     try:
-                        model = model_class(K, self.sectors)
-                    except TypeError:
-                        model = model_class(K)
+                        try:
+                            model = model_class(K, self.sectors)
+                        except TypeError:
+                            model = model_class(K)
 
-                    start_time = time.time()
-                    model.fit(R_train, I_train)
-                    exec_time = time.time() - start_time
+                        start_time = time.time()
+                        model.fit(R_train, I_train)
+                        exec_time = time.time() - start_time
 
-                    assets = np.array(model.selected_assets)
-                    weights = np.array(model.weights).flatten()
+                        assets  = np.array(model.selected_assets)
+                        weights = np.array(model.weights).flatten()
 
-                    assert len(assets) == K, f"{model_name} returned {len(assets)} assets instead of {K}"
+                        assert len(assets) == K, (
+                            f"{model_name} returned {len(assets)} assets instead of {K}"
+                        )
 
-                    if len(assets) == 0 or len(weights) == 0:
-                        continue
+                        weights[weights < 0] = 0
+                        if weights.sum() > 0:
+                            weights = weights / weights.sum()
 
-                    weights[weights < 0] = 0
-                    if weights.sum() > 0:
-                        weights = weights / weights.sum()
+                        # In-sample tracking error
+                        R_sel = R_train[assets].to_numpy(dtype=float)
+                        port_ret = R_sel @ weights
+                        idx_ret  = I_train.to_numpy(dtype=float).flatten()
 
-                    R_test_sel = R_test[assets]
-                    portfolio_returns = R_test_sel.values @ weights
+                        te      = np.std(port_ret - idx_ret)
+                        te_ann  = te * np.sqrt(252)
 
-                    te_out = self.tracking_error(portfolio_returns, I_test.values)
-                    te_ann = self.annualized_te(te_out)
+                        # Portfolio CSV
+                        bw = self.benchmark_weights(assets)
+                        sector_vals = self._resolve_series_values(
+                            self.sectors, assets.tolist(), "Unknown"
+                        )
+                        portfolio_df = pd.DataFrame({
+                            "asset":            assets,
+                            "sector":           sector_vals.values,
+                            "weight":           weights,
+                            "benchmark_weight": bw
+                        }).sort_values("weight", ascending=False)
 
-                    previous_weights = previous_weights_map[(model_name, K)]
-                    previous_assets = previous_assets_map[(model_name, K)]
-                    if previous_weights is None or previous_assets is None:
-                        turnover = 0
-                    else:
-                        turnover = self.compute_turnover(previous_assets, previous_weights, assets, weights)
+                        portfolio_file = (
+                            f"results/portfolios/{horizon_name}_{model_name}_K{K}.csv"
+                        )
+                        portfolio_df.to_csv(portfolio_file, index=False)
 
-                    diversification = self.diversification(weights)
+                        results.append({
+                            "horizon":        horizon_name,
+                            "model":          model_name,
+                            "K":              K,
+                            "TE":             te,
+                            "TE_annual":      te_ann,
+                            "diversification": self.diversification(weights),
+                            "execution_time": exec_time
+                        })
 
-                    export_assets = assets
-                    export_weights = weights
+                        print(f"done ({exec_time:.1f}s  TE={te_ann:.4f})")
 
-                    portfolio_df = pd.DataFrame({
-                        "asset": export_assets,
-                        "weight": export_weights,
-                        "benchmark_weight": self.benchmark_weights(export_assets) if len(export_assets) > 0 else []
-                    })
+                    except Exception as e:
+                        print(f"ERROR: {e}")
 
-                    if len(portfolio_df) > 0:
-                        sector_values = self._resolve_series_values(self.sectors, portfolio_df["asset"].tolist(), "Unknown")
-                        portfolio_df["sector"] = sector_values.values
-                        portfolio_df = portfolio_df[["asset", "sector", "weight", "benchmark_weight"]]
-                        portfolio_df = portfolio_df.sort_values("weight", ascending=False)
+        results_df = pd.DataFrame(results)
+        results_df.to_csv("results/summaries/experiment_results.csv", index=False)
 
-                    portfolio_file = f"results/portfolios/{model_name}_K{K}_t{start}.csv"
-                    portfolio_df.to_csv(portfolio_file, index=False)
-
-                    model_metrics_map[model_name].append({
-                        "model": model_name,
-                        "K": K,
-                        "window": start,
-                        "TE_out": te_out,
-                        "TE_annual": te_ann,
-                        "execution_time": exec_time,
-                        "turnover": turnover,
-                        "diversification": diversification
-                    })
-
-                    previous_weights_map[(model_name, K)] = weights
-                    previous_assets_map[(model_name, K)] = assets
-
-        for model_name, model_metrics in model_metrics_map.items():
-
-            df_metrics = pd.DataFrame(model_metrics)
-            df_metrics.to_csv(f"results/metrics/{model_name}_metrics.csv", index=False)
-
-            if not df_metrics.empty:
-                summary = df_metrics.groupby("K").mean().reset_index()
-                summary["model"] = model_name
-                summary_results.append(summary)
-
-        if summary_results:
-            final_summary = pd.concat(summary_results)
-        else:
-            final_summary = pd.DataFrame()
-
-        final_summary.to_csv("results/summaries/model_comparison.csv", index=False)
-
-        return final_summary
+        return results_df
