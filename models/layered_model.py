@@ -5,10 +5,11 @@ import time
 
 class LayeredOptimization:
 
-    def __init__(self, K, sectors):
+    def __init__(self, K, sectors, market_caps=None):
 
         self.K = K
         self.sectors = sectors
+        self.market_caps = market_caps
 
     def fit(self, R, index_returns):
 
@@ -27,20 +28,17 @@ class LayeredOptimization:
         w = cp.Variable(N)
         x = cp.Variable(N, boolean=True)
 
-        cap = 2.0 / self.K
-
         constraints = []
 
-        # Layer 1 : cardinality
+        # Layer 1 : cardinality  (max 7% per asset)
         constraints += [
             cp.sum(w) == 1,
             cp.sum(x) == self.K,
             w >= 0,
-            w <= cap * x          # forces w=0 when x=0, caps at 2/K when x=1
+            w <= 0.07 * x
         ]
 
-        # Layer 2 : sector constraints
-        # Resolve ticker variants (BF-B -> BF.B) for sector lookup
+        # Layer 2 : benchmark-relative sector constraints (±1%)
         def resolve_ticker(t):
             if t not in self.sectors.index:
                 alt = t.replace("-", ".")
@@ -48,40 +46,63 @@ class LayeredOptimization:
                     return alt
             return t
 
-        unique_sectors = self.sectors.loc[[resolve_ticker(a) for a in assets]].unique()
+        # Compute benchmark sector weights from market caps
+        if self.market_caps is not None:
+            caps = self.market_caps.reindex(assets).fillna(0)
+            sector_caps = {}
+            for asset, cap in caps.items():
+                sector = self.sectors.get(resolve_ticker(asset))
+                if sector is None:
+                    continue
+                sector_caps[sector] = sector_caps.get(sector, 0) + cap
+            total_cap = sum(sector_caps.values())
+            bench_sector_w = {
+                s: v / total_cap for s, v in sector_caps.items()
+            } if total_cap > 0 else {}
+        else:
+            bench_sector_w = {}
+
+        unique_sectors = set(
+            self.sectors.get(resolve_ticker(a)) for a in assets
+        ) - {None}
 
         for s in unique_sectors:
 
-            sector_assets = [i for i, a in enumerate(assets)
-                             if self.sectors.get(resolve_ticker(a)) == s]
+            sector_idx = [
+                i for i, a in enumerate(assets)
+                if self.sectors.get(resolve_ticker(a)) == s
+            ]
 
-            if len(sector_assets) == 0:
+            if len(sector_idx) == 0:
                 continue
 
-            sector_weight = cp.sum(w[sector_assets])
+            sector_weight = cp.sum(w[sector_idx])
 
-            constraints += [
-                sector_weight <= 0.30
-            ]
+            if s in bench_sector_w:
+                b = bench_sector_w[s]
+                constraints += [
+                    sector_weight >= b - 0.01,
+                    sector_weight <= b + 0.01
+                ]
+            else:
+                # Fallback: loose cap if benchmark weight unknown
+                constraints += [sector_weight <= 0.30]
 
         # objective
         objective = cp.Minimize(cp.sum_squares(index_np - R_np @ w))
 
         prob = cp.Problem(objective, constraints)
 
-        prob.solve(solver=cp.GUROBI, TimeLimit=120, MIPGap=0.01, Threads=4,
-                   reoptimize=True)
+        prob.solve(solver=cp.GUROBI, TimeLimit=180)   # 3 min max
 
         end_time = time.time()
 
         self.execution_time = end_time - start_time
 
-        # Handle timeout / infeasible: fall back to top-K by correlation
         if x.value is None:
-            corr = np.corrcoef(R_np.T, index_np.flatten())[:-1, -1]
-            selected_idx = np.argsort(corr)[-self.K:]
-        else:
-            selected_idx = np.array([i for i in range(N) if x.value[i] > 0.5])
+            raise RuntimeError("Layered model failed to solve")
+
+        selected_idx = np.array([i for i in range(N) if x.value[i] > 0.5])
 
         if len(selected_idx) != self.K:
             raw_weights = np.array(w.value).flatten()

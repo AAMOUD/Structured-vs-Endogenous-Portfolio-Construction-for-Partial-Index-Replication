@@ -2,10 +2,9 @@ import pandas as pd
 
 from backtest.backtest_engine import BacktestEngine
 
-from models.stratified import StratifiedModel
-from models.correlation import CorrelationModel
-from models.clustering import ClusteringModel
-from models.lasso import LassoModel
+from models.stratified import StratifiedModel, StratifiedSectorModel
+from models.market_cap import MarketCapModel, MarketCapSectorModel
+from models.lasso import LassoModel, LassoSectorModel
 from models.miqp_gurobi import MIQPModel
 from models.layered_model import LayeredOptimization
 
@@ -23,12 +22,14 @@ market_caps = market_caps["market_cap"]
 
 models = {
 
-    "Stratified": StratifiedModel,
-    "Correlation": CorrelationModel,
-    "Clustering": ClusteringModel,
-    "MIQP_Gurobi": MIQPModel,
-    "LASSO": LassoModel,
-    "Layered": LayeredOptimization
+    "Stratified":        lambda K, sectors=None: StratifiedModel(K, sectors, market_caps),
+    "Stratified_sector": lambda K, sectors=None: StratifiedSectorModel(K, sectors, market_caps),
+    "MarketCap":         lambda K, sectors=None: MarketCapModel(K, market_caps),
+    "MarketCap_sector":  lambda K, sectors=None: MarketCapSectorModel(K, market_caps, sectors),
+    "LASSO":             LassoModel,
+    "LASSO_sector":      lambda K, sectors=None: LassoSectorModel(K, sectors, market_caps),
+    "MIQP_Gurobi":       MIQPModel,
+    "Layered":           lambda K, sectors=None: LayeredOptimization(K, sectors, market_caps)
 }
 
 

@@ -91,94 +91,107 @@ class BacktestEngine:
 
     def run(self, models, K_list):
 
-        horizons = {
-            "1y":   252,
-            "5y":   252 * 5,
-            "10y":  252 * 10,
-            "full": len(self.returns)
-        }
+        train_length = 252 * 3   # 3-year training window
+
+        R_train = self.returns.iloc[-train_length:].dropna(axis=1)
+        I_train = self.index_returns.iloc[-train_length:]
+
+        print(f"Training window: {R_train.index[0].date()} -> {R_train.index[-1].date()} ({train_length} days)")
 
         results = []
 
-        for horizon_name, horizon_length in horizons.items():
+        for K in K_list:
 
-            print(f"\n=== Horizon: {horizon_name} ({horizon_length} days) ===")
+            if len(R_train.columns) < K:
+                print(f"Skipping K={K}: only {len(R_train.columns)} assets available")
+                continue
 
-            R_train = self.returns.iloc[-horizon_length:].dropna(axis=1)
-            I_train = self.index_returns.iloc[-horizon_length:]
+            for model_name, model_class in models.items():
 
-            for K in K_list:
+                print(f"  K={K:3d}  {model_name}...", end=" ", flush=True)
 
-                if len(R_train.columns) < K:
-                    print(f"  Skipping K={K}: only {len(R_train.columns)} assets available")
-                    continue
-
-                for model_name, model_class in models.items():
-
-                    print(f"  [{horizon_name}] K={K:3d}  {model_name}...", end=" ", flush=True)
-
+                try:
                     try:
-                        try:
-                            model = model_class(K, self.sectors)
-                        except TypeError:
-                            model = model_class(K)
+                        model = model_class(K, self.sectors)
+                    except TypeError:
+                        model = model_class(K)
 
-                        start_time = time.time()
-                        model.fit(R_train, I_train)
-                        exec_time = time.time() - start_time
+                    start_time = time.time()
+                    model.fit(R_train, I_train)
+                    exec_time = time.time() - start_time
 
-                        assets  = np.array(model.selected_assets)
-                        weights = np.array(model.weights).flatten()
+                    assets  = np.array(model.selected_assets)
+                    weights = np.array(model.weights).flatten()
 
-                        assert len(assets) == K, (
-                            f"{model_name} returned {len(assets)} assets instead of {K}"
-                        )
+                    assert len(assets) == K, (
+                        f"{model_name} returned {len(assets)} assets instead of {K}"
+                    )
 
-                        weights[weights < 0] = 0
-                        if weights.sum() > 0:
-                            weights = weights / weights.sum()
+                    weights[weights < 0] = 0
+                    if weights.sum() > 0:
+                        weights = weights / weights.sum()
 
-                        # In-sample tracking error
-                        R_sel = R_train[assets].to_numpy(dtype=float)
-                        port_ret = R_sel @ weights
-                        idx_ret  = I_train.to_numpy(dtype=float).flatten()
+                    # In-sample tracking error (annualised)
+                    R_sel    = R_train[assets].to_numpy(dtype=float)
+                    port_ret = R_sel @ weights
+                    idx_ret  = I_train.to_numpy(dtype=float).flatten()
+                    te_annual = np.std(port_ret - idx_ret) * np.sqrt(252)
 
-                        te      = np.std(port_ret - idx_ret)
-                        te_ann  = te * np.sqrt(252)
+                    # Asset active share = L1 distance from cap-weighted benchmark
+                    bw = self.benchmark_weights(assets)          # cap-weighted over selected K
+                    asset_active_share = float(np.sum(np.abs(weights - bw)))
 
-                        # Portfolio CSV
-                        bw = self.benchmark_weights(assets)
-                        sector_vals = self._resolve_series_values(
-                            self.sectors, assets.tolist(), "Unknown"
-                        )
-                        portfolio_df = pd.DataFrame({
-                            "asset":            assets,
-                            "sector":           sector_vals.values,
-                            "weight":           weights,
-                            "benchmark_weight": bw
-                        }).sort_values("weight", ascending=False)
+                    # Normalised diversification: N_eff / K  (0=concentrated, 1=equal weight)
+                    n_eff = self.diversification(weights)        # 1/sum(w²)
+                    div_norm = n_eff / K
 
-                        portfolio_file = (
-                            f"results/portfolios/{horizon_name}_{model_name}_K{K}.csv"
-                        )
-                        portfolio_df.to_csv(portfolio_file, index=False)
+                    # Benchmark diversification
+                    bench_n_eff = 1.0 / np.sum(bw ** 2) if np.sum(bw ** 2) > 0 else 0.0
+                    bench_div_norm = bench_n_eff / K
 
-                        results.append({
-                            "horizon":        horizon_name,
-                            "model":          model_name,
-                            "K":              K,
-                            "TE":             te,
-                            "TE_annual":      te_ann,
-                            "diversification": self.diversification(weights),
-                            "execution_time": exec_time
-                        })
+                    # Portfolio CSV
+                    sector_vals = self._resolve_series_values(
+                        self.sectors, assets.tolist(), "Unknown"
+                    )
+                    portfolio_df = pd.DataFrame({
+                        "asset":            assets,
+                        "sector":           sector_vals.values,
+                        "weight":           weights,
+                        "benchmark_weight": bw
+                    }).sort_values("weight", ascending=False)
 
-                        print(f"done ({exec_time:.1f}s  TE={te_ann:.4f})")
+                    # Sector active share
+                    sector_port  = portfolio_df.groupby("sector")["weight"].sum()
+                    sector_bench = portfolio_df.groupby("sector")["benchmark_weight"].sum()
+                    all_sectors  = sector_port.index.union(sector_bench.index)
+                    sector_active_share = float(
+                        np.sum(np.abs(
+                            sector_port.reindex(all_sectors, fill_value=0).values -
+                            sector_bench.reindex(all_sectors, fill_value=0).values
+                        ))
+                    )
 
-                    except Exception as e:
-                        print(f"ERROR: {e}")
+                    portfolio_file = f"results/portfolios/{model_name}_K{K}.csv"
+                    portfolio_df.to_csv(portfolio_file, index=False)
+
+                    results.append({
+                        "model":                 model_name,
+                        "K":                     K,
+                        "TE_annual":             te_annual,
+                        "asset_active_share":    asset_active_share,
+                        "sector_active_share":   sector_active_share,
+                        "diversification":       div_norm,
+                        "bench_diversification": bench_div_norm,
+                        "execution_time":        exec_time
+                    })
+
+                    print(f"done ({exec_time:.1f}s  TE={te_annual:.4f}  AS={asset_active_share:.3f})")
+
+                except Exception as e:
+                    print(f"ERROR: {e}")
 
         results_df = pd.DataFrame(results)
         results_df.to_csv("results/summaries/experiment_results.csv", index=False)
+        results_df.to_excel("results/summaries/experiment_results.xlsx", index=False)
 
         return results_df
