@@ -4,6 +4,7 @@ from backtest.backtest_engine import BacktestEngine
 
 from models.stratified import StratifiedModel, StratifiedSectorModel
 from models.market_cap import MarketCapModel, MarketCapSectorModel
+from models.index_contribution import ContributionModel, ContributionSectorModel
 from models.lasso import LassoModel, LassoSectorModel
 from models.miqp_gurobi import MIQPModel
 from models.layered_model import LayeredOptimization
@@ -26,6 +27,8 @@ models = {
     "Stratified_sector": lambda K, sectors=None: StratifiedSectorModel(K, sectors, market_caps),
     "MarketCap":         lambda K, sectors=None: MarketCapModel(K, market_caps),
     "MarketCap_sector":  lambda K, sectors=None: MarketCapSectorModel(K, market_caps, sectors),
+    "Contribution":      ContributionModel,
+    "Contribution_sector": lambda K, sectors=None: ContributionSectorModel(K, sectors, market_caps),
     "LASSO":             LassoModel,
     "LASSO_sector":      lambda K, sectors=None: LassoSectorModel(K, sectors, market_caps),
     "MIQP_Gurobi":       MIQPModel,
@@ -35,7 +38,15 @@ models = {
 
 K_list = [50,75,100,125,150,175,200]
 
+TRAIN_LENGTH_DAYS = 252 * 3
+EVAL_LENGTH_DAYS = 63
+
 
 engine = BacktestEngine(returns, index_returns, sectors, market_caps)
 
-results = engine.run(models, K_list)
+results = engine.run(
+    models,
+    K_list,
+    train_length=TRAIN_LENGTH_DAYS,
+    eval_length=EVAL_LENGTH_DAYS,
+)

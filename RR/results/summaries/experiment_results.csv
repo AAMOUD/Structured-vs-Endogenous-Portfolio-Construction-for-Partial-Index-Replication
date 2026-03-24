@@ -1,0 +1,2 @@
+model,K,train_length_days,eval_length_days,TE_annual,TE_annual_oos,portfolio_return_oos,benchmark_return_oos,tracking_difference_oos,asset_active_share,sector_active_share,diversification,bench_diversification,execution_time
+MarketCap,50,504,21,0.01810816091748758,0.018095076468069887,-0.023071969566688888,-0.02073310999984357,-0.0023388595668453194,0.48401102741400615,0.1308883744337837,0.5690368229979305,0.08981030641166736,0.05278468132019043

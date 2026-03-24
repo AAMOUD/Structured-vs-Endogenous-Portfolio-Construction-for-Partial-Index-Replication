@@ -4,6 +4,7 @@ from backtest.backtest_engine_rolling import BacktestEngineRolling
 
 from models.stratified import StratifiedModel, StratifiedSectorModel
 from models.market_cap import MarketCapModel, MarketCapSectorModel
+from models.index_contribution import ContributionModel, ContributionSectorModel
 from models.lasso import LassoModel, LassoSectorModel
 from models.miqp_gurobi import MIQPModel
 from models.layered_model import LayeredOptimization
@@ -26,6 +27,8 @@ models = {
     "Stratified_sector": lambda K, sectors=None: StratifiedSectorModel(K, sectors, market_caps),
     "MarketCap":         lambda K, sectors=None: MarketCapModel(K, market_caps),
     "MarketCap_sector":  lambda K, sectors=None: MarketCapSectorModel(K, market_caps, sectors),
+    "Contribution":      ContributionModel,
+    "Contribution_sector": lambda K, sectors=None: ContributionSectorModel(K, sectors, market_caps),
     "LASSO":             LassoModel,
     "LASSO_sector":      lambda K, sectors=None: LassoSectorModel(K, sectors, market_caps),
     "MIQP_Gurobi":       MIQPModel,
@@ -34,6 +37,7 @@ models = {
 
 # ── Portfolio sizes ─────────────────────────────────────────────────────── #
 K_list = [50, 75, 100, 125, 150, 175, 200]
+TRAIN_LENGTH_DAYS = 252
 
 # ── Run rolling backtest ────────────────────────────────────────────────── #
 #   Training window : 252 trading days (≈ 1 year) before each quarter.
@@ -41,6 +45,11 @@ K_list = [50, 75, 100, 125, 150, 175, 200]
 #   Last quarter    : last complete quarter in the available return data.
 #   Output          : results_rolling/
 engine = BacktestEngineRolling(returns, index_returns, sectors, market_caps)
-results = engine.run(models, K_list, output_dir="results_rolling")
+results = engine.run(
+    models,
+    K_list,
+    output_dir="results_rolling",
+    train_length=TRAIN_LENGTH_DAYS,
+)
 
 print(results)
