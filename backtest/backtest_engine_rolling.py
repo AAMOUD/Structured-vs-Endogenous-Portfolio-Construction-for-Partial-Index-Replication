@@ -73,8 +73,10 @@ class BacktestEngineRolling:
         return float(np.sum(np.abs(new_vec - prev_vec)))
 
     @staticmethod
-    def information_ratio(port_ret, idx_ret):
+    def information_ratio(port_ret, idx_ret, min_obs=252):
         active = port_ret - idx_ret
+        if len(active) < min_obs:
+            return np.nan
         vol = np.std(active)
         if vol == 0:
             return np.nan
@@ -156,6 +158,7 @@ class BacktestEngineRolling:
 
         results = []
         prev_portfolio = {}
+        oos_daily_by_key = {}
 
         for i in range(len(all_qs) - 1):
             q_start = all_qs[i]
@@ -285,6 +288,7 @@ class BacktestEngineRolling:
                         bench_cum_ret = float(np.prod(1 + idx_oos) - 1)
                         tracking_diff = port_cum_ret - bench_cum_ret
 
+                        # Quarterly windows are ~63 trading days; default min_obs=252 returns NaN.
                         ir_oos = self.information_ratio(port_oos, idx_oos)
                         sharpe_oos = self.sharpe_ratio(port_oos)
                         mdd_te = self.max_drawdown_te(port_oos, idx_oos)
@@ -326,6 +330,14 @@ class BacktestEngineRolling:
                         )
 
                         active_daily = port_oos - idx_oos
+                        series_key = (model_name, K)
+                        if series_key not in oos_daily_by_key:
+                            oos_daily_by_key[series_key] = {
+                                "portfolio": [],
+                                "benchmark": [],
+                            }
+                        oos_daily_by_key[series_key]["portfolio"].append(port_oos)
+                        oos_daily_by_key[series_key]["benchmark"].append(idx_oos)
                         oos_path_df = pd.DataFrame({
                             "date": I_eval.index,
                             "portfolio_return": port_oos,
@@ -396,10 +408,44 @@ class BacktestEngineRolling:
                 )
 
         results_df = pd.DataFrame(results)
+
+        full_period_rows = []
+        for (model_name, k), vals in oos_daily_by_key.items():
+            if not vals["portfolio"] or not vals["benchmark"]:
+                continue
+
+            port_all = np.concatenate(vals["portfolio"])
+            bench_all = np.concatenate(vals["benchmark"])
+            active_all = port_all - bench_all
+
+            port_full = float(np.prod(1 + port_all) - 1)
+            bench_full = float(np.prod(1 + bench_all) - 1)
+            te_full = float(np.std(active_all) * np.sqrt(252)) if len(active_all) > 0 else np.nan
+            ir_full = self.information_ratio(port_all, bench_all)
+            full_period_rows.append({
+                "model": model_name,
+                "K": k,
+                "n_daily_obs": int(len(port_all)),
+                "IR_full_period": ir_full,
+                "TE_annual_oos_full": te_full,
+                "portfolio_return_full_period": port_full,
+                "benchmark_return_full_period": bench_full,
+                "tracking_difference_full_period": port_full - bench_full,
+                # Backward-compatible aliases.
+                "information_ratio_full_period": ir_full,
+                "n_oos_days": int(len(port_all)),
+            })
+
+        full_period_df = pd.DataFrame(full_period_rows)
+
         out_csv = f"{output_dir}/summaries/experiment_results_rolling.csv"
         out_xlsx = f"{output_dir}/summaries/experiment_results_rolling.xlsx"
+        out_full_period_csv = f"{output_dir}/summaries/full_period_metrics.csv"
+
         results_df.to_csv(out_csv, index=False)
         results_df.to_excel(out_xlsx, index=False)
+        full_period_df.to_csv(out_full_period_csv, index=False)
 
         print(f"\nResults saved -> {out_csv}")
+        print(f"Full-period metrics saved -> {out_full_period_csv}")
         return results_df
