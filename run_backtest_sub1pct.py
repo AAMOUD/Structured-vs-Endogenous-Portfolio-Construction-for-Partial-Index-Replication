@@ -1,22 +1,27 @@
 """
 run_backtest_sub1pct.py
 =======================
-Dedicated run script for the sub-1% TE experiment using:
-    - LayeredOptimizationV2 (Ledoit-Wolf shrinkage)
-    - 504-day training window (2 years)
-    - K in {100, 150, 200}  (smaller K cannot realistically reach <1% OOS)
+Ablation study: LayeredOptimizationV2 with vs without Ledoit-Wolf shrinkage.
 
-Run this AFTER the standard backtest has completed so you have a baseline.
+Purpose in thesis
+─────────────────
+This script isolates the contribution of LW shrinkage to TE reduction.
+It is NOT a full model comparison — that is run_backtest_rolling.py.
+Run this AFTER the main rolling backtest so you have a baseline to compare.
+
 Results land in results_rolling_v2/ to avoid overwriting the main results.
 
-Expected outcome
-────────────────
-    K=100 + LW + 504 days  →  IS TE ~0.5-0.7%,  OOS TE ~0.9-1.3%
-    K=150 + LW + 504 days  →  IS TE ~0.4-0.6%,  OOS TE ~0.7-1.0%
-    K=200 + LW + 504 days  →  IS TE ~0.3-0.5%,  OOS TE ~0.6-0.9%
+What to report in thesis
+─────────────────────────
+From full_period_metrics.csv, compare:
+    Layered_LW   vs Layered_noLW  at K=125 and K=150
+The delta in TE_annual_oos_full is the measured contribution of LW shrinkage.
 
-Comparison columns to add to your thesis Table (results_rolling vs results_rolling_v2):
-    model | K | train_days | TE_annual_insample | TE_annual_oos | lw_delta
+Expected outcome (with clean data + 504-day window)
+────────────────────────────────────────────────────
+    K=100  LW  →  OOS TE ~0.9–1.3%
+    K=150  LW  →  OOS TE ~0.7–1.0%
+    K=200  LW  →  OOS TE ~0.5–0.8%
 """
 
 import pandas as pd
@@ -24,35 +29,52 @@ import pandas as pd
 from backtest.backtest_engine_rolling import BacktestEngineRolling
 from models.layered_model_v2 import LayeredOptimizationV2
 
+# ── Data ─────────────────────────────────────────────────────────────────── #
 returns       = pd.read_parquet("data/returns.parquet")
 index_returns = pd.read_parquet("data/index_returns.parquet")
+sectors       = pd.read_csv("data/sp500_tickers.csv").set_index("Symbol")["GICS Sector"]
+market_caps   = pd.read_csv("data/market_caps.csv", index_col=0)["market_cap"]
 
-sectors      = pd.read_csv("data/sp500_tickers.csv").set_index("Symbol")["GICS Sector"]
-market_caps  = pd.read_csv("data/market_caps.csv", index_col=0)["market_cap"]
-
+# ── Models — LW on vs off (ablation) ─────────────────────────────────────── #
 models = {
-    "Layered_LW":          lambda K, sectors=None: LayeredOptimizationV2(
-                               K, sectors, market_caps,
-                               use_lw_shrinkage=True,
-                               time_limit=300,
-                               mip_gap=0.003,
-                           ),
-    "Layered_noLW":        lambda K, sectors=None: LayeredOptimizationV2(
-                               K, sectors, market_caps,
-                               use_lw_shrinkage=False,  # control: same model, no shrinkage
-                               time_limit=240,
-                               mip_gap=0.003,
-                           ),
+    "Layered_LW": lambda K, sectors=None: LayeredOptimizationV2(
+        K, sectors, market_caps,
+        use_lw_shrinkage=True,
+        time_limit=300,
+        mip_gap=0.003,
+    ),
+    "Layered_noLW": lambda K, sectors=None: LayeredOptimizationV2(
+        K, sectors, market_caps,
+        use_lw_shrinkage=False,
+        time_limit=240,
+        mip_gap=0.003,
+    ),
 }
 
-K_list = [100, 150, 200]
+# ── K range ───────────────────────────────────────────────────────────────── #
+# K=75 excluded: sub-1% OOS TE is structurally unreachable at that size.
+# Focus on K=125 and K=150 for the thesis — consistent with main backtest.
+K_list = [100, 125, 150, 175, 200]
 
-engine = BacktestEngineRolling(returns, index_returns, sectors, market_caps)
+# ── Run ───────────────────────────────────────────────────────────────────── #
+engine  = BacktestEngineRolling(returns, index_returns, sectors, market_caps)
 results = engine.run(
     models,
     K_list,
     output_dir="results_rolling_v2",
-    train_length=504,   # 2-year window — THE main lever beyond K
+    train_length=504,
 )
 
+# ── Summary ───────────────────────────────────────────────────────────────── #
+print("\n── Per-quarter results ──")
 print(results[["model", "K", "quarter", "TE_annual_insample", "TE_annual_oos"]].to_string())
+
+print("\n── Full-period OOS TE (primary thesis metric) ──")
+fp = pd.read_csv("results_rolling_v2/summaries/full_period_metrics.csv")
+print(fp[["model", "K", "TE_annual_oos_full", "IR_full_period", "n_oos_days"]].to_string())
+
+print("\n── LW shrinkage impact (delta TE) ──")
+pivot = fp.pivot(index="K", columns="model", values="TE_annual_oos_full")
+if "Layered_LW" in pivot.columns and "Layered_noLW" in pivot.columns:
+    pivot["delta_TE (noLW - LW)"] = pivot["Layered_noLW"] - pivot["Layered_LW"]
+    print(pivot.to_string())
